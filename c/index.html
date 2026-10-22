@@ -229,6 +229,36 @@ body {
 
 .footnote { margin: 0; font-size: var(--step--1); color: var(--mist); max-width: 60ch; }
 
+.history { display: flex; flex-direction: column; }
+.history h3 {
+  font-family: var(--f-mono);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--mist);
+  margin: 0 0 4px;
+}
+.hist-row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+}
+.hist-row .tapno { color: var(--mist); font-size: var(--step--1); }
+.hist-row .pw { text-align: right; white-space: nowrap; }
+.hist-row .pw small { color: var(--mist); font-size: 0.75rem; margin-left: 8px; }
+.dots { display: flex; gap: 5px; }
+.dots i {
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 1px solid rgba(169, 191, 232, 0.4);
+}
+.dots i.on { background: var(--gold); border-color: var(--gold); box-shadow: 0 0 6px rgba(243, 199, 79, 0.6); }
+
 .demo {
   display: flex;
   flex-direction: column;
@@ -374,7 +404,7 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
     </div>
 
     <div class="reading">
-      <p class="label" id="reading-title">Power harvested from the phone on the previous tap</p>
+      <p class="label" id="reading-title">Power harvested from the phone on the last tap</p>
       <p class="value"><span class="ge" id="ge" hidden>≥</span><span id="pVal">7.5</span><span class="unit">mW</span></p>
       <p class="verdict" id="verdict">That was enough to light <b>3 of 5</b> stars.</p>
 
@@ -384,7 +414,12 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
         <div><dt>1 star</dt><dd>2.5 mW</dd></div>
       </dl>
 
-      <p class="footnote" id="footnote">The card measures each phone, writes the result into its own NFC memory, and the next phone reads it. So this number came from whoever tapped before you. Yours will show up for the next person.</p>
+      <div class="history" id="history" hidden>
+        <h3>Earlier taps</h3>
+        <div id="histRows"></div>
+      </div>
+
+      <p class="footnote" id="footnote">The card measures each phone, writes the result into its own NFC memory, and the next phone reads it. So these numbers came from the phones that tapped before you. Yours will show up for the next person.</p>
 
       <div class="demo" id="demo" hidden>
         <p>This link carries no card data, so the numbers above are an example. Drag to see how the card responds to a stronger or weaker phone.</p>
@@ -419,7 +454,7 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
 
   <footer>
     <span class="mark">NC-01 rev A · 2026</span>
-    <span>This page only reads <code>n</code>, <code>p</code> and <code>v</code> from its own address. Nothing is stored or sent anywhere.</span>
+    <span>This page only reads <code>n</code>, <code>p</code>, <code>v</code> and <code>s</code> from its own address. Nothing is stored or sent anywhere.</span>
   </footer>
 </div>
 
@@ -448,13 +483,21 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
     if (!isFinite(x) || x < min || x > max) return null;
     return x;
   }
+  /* p and v are comma-separated, newest first: p=07.5,03.2,12.1 */
+  function list(key, min, max) {
+    if (!q.has(key)) return [];
+    return q.get(key).split(",").slice(0, 3).map(function (t) {
+      var x = parseFloat(t);
+      return isFinite(x) && x >= min && x <= max ? x : null;
+    });
+  }
   var data = {
     n: num("n", 0, 9999999),
-    p: num("p", 0, 100),       /* mW */
-    v: num("v", 0, 5),         /* V */
-    s: q.get("s") === "1"      /* 1 = dummy load maxed out, real power is higher */
+    p: list("p", 0, 100),            /* mW */
+    v: list("v", 0, 5),              /* V; 0.00 marks an empty slot */
+    s: (q.get("s") || "").replace(/[^01]/g, "")   /* one digit per tap: 1 = dummy load maxed out */
   };
-  var live = data.n !== null || data.p !== null || data.v !== null;
+  var live = data.n !== null || data.p.length > 0 || data.v.length > 0;
 
   var el = function (id) { return document.getElementById(id); };
   var stars = Array.prototype.slice.call(document.querySelectorAll(".star"));
@@ -464,41 +507,65 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
     return Math.max(1, Math.min(5, Math.round(p / MW_PER_STAR)));
   }
 
-  function render(d) {
-    el("pVal").textContent = d.p === null ? "–" : d.p.toFixed(1);
-    el("ge").hidden = !(d.s && d.p !== null);
-    el("vVal").textContent = d.v === null ? "–" : d.v.toFixed(2) + " V";
-    el("nVal").textContent = d.n === null ? "–" : String(Math.round(d.n));
+  function dotsHtml(k) {
+    var h = '<span class="dots" aria-label="' + k + ' of 5 stars">';
+    for (var i = 0; i < 5; i++) h += '<i class="' + (i < k ? "on" : "") + '"></i>';
+    return h + "</span>";
+  }
 
-    var k = starsFor(d.p);
+  function renderHistory(d) {
+    var rows = "";
+    for (var i = 1; i < 3; i++) {
+      var p = d.p[i], v = d.v[i];
+      if (p === undefined || p === null || !v) continue;          /* empty slot */
+      var tap = d.n === null ? "–" : "#" + Math.max(0, Math.round(d.n) - i);
+      var sat = d.s.charAt(i) === "1";
+      rows += '<div class="hist-row"><span class="tapno">Tap ' + tap + '</span>' + dotsHtml(starsFor(p)) +
+        '<span class="pw">' + (sat ? "≥ " : "") + p.toFixed(1) + ' mW<small>' + v.toFixed(2) + ' V</small></span></div>';
+    }
+    el("histRows").innerHTML = rows;
+    el("history").hidden = rows === "";
+  }
+
+  function render(d) {
+    var p0 = d.p.length ? d.p[0] : null;
+    var v0 = d.v.length ? d.v[0] : null;
+    var s0 = d.s.charAt(0) === "1";
+    el("pVal").textContent = p0 === null ? "–" : p0.toFixed(1);
+    el("ge").hidden = !(s0 && p0 !== null);
+    el("vVal").textContent = v0 === null || !v0 ? "–" : v0.toFixed(2) + " V";
+    el("nVal").textContent = d.n === null ? "–" : String(Math.round(d.n));
+    renderHistory(d);
+
+    var k = starsFor(p0);
     stars.forEach(function (s, i) { s.classList.toggle("on", i < k); });
     el("card").setAttribute("aria-label", "Night sky over the card with " + k + " of 5 stars lit");
 
     var verdict = el("verdict");
-    if (d.p === null) {
+    if (p0 === null) {
       verdict.textContent = "No power reading in this link.";
     } else if (k === 0) {
       verdict.textContent = "Not enough to light a star.";
     } else {
       verdict.innerHTML = "That was enough to light <b>" + k + " of 5</b> " + (k === 1 ? "star." : "stars.") +
-        (d.s ? " The dummy load ran out before the field did." : "");
+        (s0 ? " The dummy load ran out before the field did." : "");
     }
   }
 
   if (live) {
     render(data);
   } else {
-    var demo = { n: 42, p: 7.5, v: 2.76, s: false };
+    var demo = { n: 42, p: [7.5, 1.8, 16.2], v: [2.76, 2.21, 2.78], s: "001" };
     el("state").textContent = "Example reading";
     el("state").classList.add("demo");
     el("demo").hidden = false;
     el("footnote").hidden = true;
     render(demo);
     el("demoP").addEventListener("input", function (e) {
-      demo.p = parseFloat(e.target.value);
+      demo.p[0] = parseFloat(e.target.value);
       /* a weaker field also means a lower open-circuit voltage */
-      demo.v = Math.min(2.85, 2.15 + demo.p * 0.045);
-      demo.s = demo.p >= 16.5;
+      demo.v[0] = Math.min(2.85, 2.15 + demo.p[0] * 0.045);
+      demo.s = (demo.p[0] >= 16.5 ? "1" : "0") + demo.s.slice(1);
       el("demoOut").textContent = demo.p.toFixed(1) + " mW";
       render(demo);
     });
