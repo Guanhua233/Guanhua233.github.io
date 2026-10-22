@@ -409,7 +409,7 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
       <p class="verdict" id="verdict">That was enough to light <b>3 of 5</b> stars.</p>
 
       <dl class="facts">
-        <div><dt>VOUT</dt><dd id="vVal">2.76 V</dd></div>
+        <div><dt>Max current</dt><dd id="iVal">2.59 mA</dd></div>
         <div><dt>Tap no.</dt><dd id="nVal">42</dd></div>
         <div><dt>1 star</dt><dd>2.5 mW</dd></div>
       </dl>
@@ -445,8 +445,8 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
     <h2 id="how-title">What happened when you tapped</h2>
     <ol>
       <li><p>Your phone switched on its NFC field at <span class="spec">13.56 MHz</span>. A 4-turn coil etched into the back of the card picks it up, about <span class="spec">2.4 µH</span>.</p></li>
-      <li><p>The NFC chip, an NXP <span class="spec">NT3H1101</span>, answers your phone and turns part of that field into <span class="spec">2–3 V</span>. That is the only power on the card. There is no battery.</p></li>
-      <li><p>An <span class="spec">STM32G030</span> microcontroller wakes up and pulls a <span class="spec">470 Ω</span> dummy load in <span class="spec">100 kHz</span> pulses, a little harder each step, until the voltage starts to sag. The highest power before that point is the reading.</p></li>
+      <li><p>The NFC chip, an NXP <span class="spec">NT3H1101</span>, answers your phone and turns part of that field into a supply that it clamps at about <span class="spec">2.95 V</span>. That is the only power on the card. There is no battery. The voltage barely changes with distance; the current the chip can deliver before it gives up does.</p></li>
+      <li><p>An <span class="spec">STM32G030</span> microcontroller wakes up and pulls a <span class="spec">470 Ω</span> dummy load in <span class="spec">100 kHz</span> pulses, a little harder each step, until the voltage starts to sag. The highest power before that point is the reading, and that power divided by the voltage is the maximum current.</p></li>
       <li><p>It lights the stars one LED at a time, each in its own 2 ms slot, so the peak current never exceeds what the field can deliver. The buffer on the supply rail is only <span class="spec">200 nF</span>.</p></li>
       <li><p>Finally it writes the reading into the chip's memory, inside the web address you just opened.</p></li>
     </ol>
@@ -454,7 +454,7 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
 
   <footer>
     <span class="mark">NC-01 rev A · 2026</span>
-    <span>This page only reads <code>n</code>, <code>p</code>, <code>v</code> and <code>s</code> from its own address. Nothing is stored or sent anywhere.</span>
+    <span>This page only reads <code>n</code>, <code>p</code>, <code>i</code> and <code>s</code> from its own address. Nothing is stored or sent anywhere.</span>
   </footer>
 </div>
 
@@ -494,10 +494,17 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
   var data = {
     n: num("n", 0, 9999999),
     p: list("p", 0, 100),            /* mW */
-    v: list("v", 0, 5),              /* V; 0.00 marks an empty slot */
+    i: list("i", 0, 50),             /* mA at the maximum power point */
     s: (q.get("s") || "").replace(/[^01]/g, "")   /* one digit per tap: 1 = dummy load maxed out */
   };
-  var live = data.n !== null || data.p.length > 0 || data.v.length > 0;
+  /* older cards wrote v (no-load voltage) instead of i: estimate i = p / v */
+  if (!data.i.length && q.has("v")) {
+    data.i = list("v", 0, 5).map(function (v, k) {
+      var p = data.p[k];
+      return v && p !== null && p !== undefined ? p / v : 0;
+    });
+  }
+  var live = data.n !== null || data.p.length > 0 || data.i.length > 0;
 
   var el = function (id) { return document.getElementById(id); };
   var stars = Array.prototype.slice.call(document.querySelectorAll(".star"));
@@ -516,12 +523,12 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
   function renderHistory(d) {
     var rows = "";
     for (var i = 1; i < 3; i++) {
-      var p = d.p[i], v = d.v[i];
-      if (p === undefined || p === null || !v) continue;          /* empty slot */
+      var p = d.p[i], cur = d.i[i];
+      if (p === undefined || p === null || (!p && !cur)) continue;   /* empty slot */
       var tap = d.n === null ? "–" : "#" + Math.max(0, Math.round(d.n) - i);
       var sat = d.s.charAt(i) === "1";
       rows += '<div class="hist-row"><span class="tapno">Tap ' + tap + '</span>' + dotsHtml(starsFor(p)) +
-        '<span class="pw">' + (sat ? "≥ " : "") + p.toFixed(1) + ' mW<small>' + v.toFixed(2) + ' V</small></span></div>';
+        '<span class="pw">' + (sat ? "≥ " : "") + p.toFixed(1) + ' mW<small>' + (cur ? cur.toFixed(2) + " mA" : "–") + '</small></span></div>';
     }
     el("histRows").innerHTML = rows;
     el("history").hidden = rows === "";
@@ -529,11 +536,11 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
 
   function render(d) {
     var p0 = d.p.length ? d.p[0] : null;
-    var v0 = d.v.length ? d.v[0] : null;
+    var i0 = d.i.length ? d.i[0] : null;
     var s0 = d.s.charAt(0) === "1";
     el("pVal").textContent = p0 === null ? "–" : p0.toFixed(1);
     el("ge").hidden = !(s0 && p0 !== null);
-    el("vVal").textContent = v0 === null || !v0 ? "–" : v0.toFixed(2) + " V";
+    el("iVal").textContent = i0 === null || !i0 ? "–" : (s0 ? "≥ " : "") + i0.toFixed(2) + " mA";
     el("nVal").textContent = d.n === null ? "–" : String(Math.round(d.n));
     renderHistory(d);
 
@@ -555,7 +562,7 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
   if (live) {
     render(data);
   } else {
-    var demo = { n: 42, p: [7.5, 1.8, 16.2], v: [2.76, 2.21, 2.78], s: "001" };
+    var demo = { n: 42, p: [7.5, 1.8, 16.2], i: [2.59, 0.62, 5.82], s: "001" };
     el("state").textContent = "Example reading";
     el("state").classList.add("demo");
     el("demo").hidden = false;
@@ -563,8 +570,8 @@ footer .mark { font-family: var(--f-mono); letter-spacing: 0.12em; text-transfor
     render(demo);
     el("demoP").addEventListener("input", function (e) {
       demo.p[0] = parseFloat(e.target.value);
-      /* a weaker field also means a lower open-circuit voltage */
-      demo.v[0] = Math.min(2.85, 2.15 + demo.p[0] * 0.045);
+      /* the chip clamps at ~2.95 V; at the knee the voltage has sagged a little */
+      demo.i[0] = demo.p[0] / 2.9;
       demo.s = (demo.p[0] >= 16.5 ? "1" : "0") + demo.s.slice(1);
       el("demoOut").textContent = demo.p.toFixed(1) + " mW";
       render(demo);
